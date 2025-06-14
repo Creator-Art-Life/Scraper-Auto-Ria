@@ -71,14 +71,16 @@
 
 ### 1. Створіть файл `.env`
 
-Створіть файл з назвою `.env` у кореневому каталозі проекту (де знаходиться `docker-compose.yml`) і додайте наступний вміст. **Замініть значення-заповнювачі на ваші фактичні облікові дані PostgreSQL.**
+Створіть файл з назвою `.env` у кореневому каталозі проекту (де знаходиться `docker-compose.yml`), скопіювавши вміст з `env.example` і заповнивши свої фактичні облікові дані PostgreSQL.
+
+Приклад `env.example`:
 
 ```env
-POSTGRES_DB="Scraper Test Task"
-POSTGRES_USER="Scraper Test Task_owner"
-POSTGRES_PASSWORD="npg_8Jm5uTdlqgwN"
-POSTGRES_HOST="ep-fragrant-queen-a8n2onme-pooler.eastus2.azure.neon.tech"
-DATABASE_URL="postgresql://Scraper%20Test%20Task_owner:npg_8Jm5uTdlqgwN@ep-fragrant-queen-a8n2onme-pooler.eastus2.azure.neon.tech/Scraper%20Test%20Task?sslmode=require"
+POSTGRES_DB="your_db_name"
+POSTGRES_USER="your_db_user"
+POSTGRES_PASSWORD="your_db_password"
+POSTGRES_HOST="your_db_host"
+DATABASE_URL="postgresql://your_db_user:your_db_password@your_db_host/your_db_name?sslmode=require"
 AUTO_RIA_START_URL="https://auto.ria.com/uk/car/used/"
 SCRAPE_TIME="01:00" # Час для щоденного скрапінгу (наприклад, 01:00 для 1 ночі)
 DUMP_TIME="03:00" # Час для щоденного дампу бази даних (наприклад, 03:00 для 3 ночі)
@@ -244,14 +246,16 @@ DUMP_TIME="03:00" # Час для щоденного дампу бази дан�
 
 ### 1. Создайте файл `.env`
 
-Создайте файл с именем `.env` в корневом каталоге проекта (там, где находится `docker-compose.yml`) и добавьте следующее содержимое. **Замените значения-заполнители на ваши фактические учетные данные PostgreSQL.**
+Создайте файл с именем `.env` в корневом каталоге проекта (там, где находится `docker-compose.yml`), скопировав содержимое из `env.example` и заполнив свои фактические учетные данные PostgreSQL.
+
+Пример `env.example`:
 
 ```env
-POSTGRES_DB="Scraper Test Task"
-POSTGRES_USER="Scraper Test Task_owner"
-POSTGRES_PASSWORD="npg_8Jm5uTdlqgwN"
-POSTGRES_HOST="ep-fragrant-queen-a8n2onme-pooler.eastus2.azure.neon.tech"
-DATABASE_URL="postgresql://Scraper%20Test%20Task_owner:npg_8Jm5uTdlqgwN@ep-fragrant-queen-a8n2onme-pooler.eastus2.azure.neon.tech/Scraper%20Test%20Task?sslmode=require"
+POSTGRES_DB="your_db_name"
+POSTGRES_USER="your_db_user"
+POSTGRES_PASSWORD="your_db_password"
+POSTGRES_HOST="your_db_host"
+DATABASE_URL="postgresql://your_db_user:your_db_password@your_db_host/your_db_name?sslmode=require"
 AUTO_RIA_START_URL="https://auto.ria.com/uk/car/used/"
 SCRAPE_TIME="01:00" # Время для ежедневного скрапинга (например, 01:00 для 1 ночи)
 DUMP_TIME="03:00" # Время для ежедневного дампа базы данных (например, 03:00 для 3 ночи)
@@ -332,7 +336,7 @@ DUMP_TIME="03:00" # Время для ежедневного дампа базы
 
     Чтобы остановить скрейпер, нажмите `Ctrl+C` в терминале, где он запущен.
 
-## Ежедневные Дампы Базы Данных
+## Ежедневные Дампи Базы Данных
 
 Приложение автоматически будет создавать ежедневные дампы базы данных PostgreSQL в время, указанное в `DUMP_TIME` в файле `.env`. Эти файлы дампов будут сохранены в каталоге `dumps/` в корне проекта.
 
