@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Environment variables
+.env
+
+# Docker
+dumps/
+
+# OS
+.DS_Store
+Thumbs.db 
