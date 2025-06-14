@@ -159,22 +159,92 @@ def parse_ad_page(url, html_content, session):
     price_tag = soup.find('strong', class_='')
     if price_tag:
         price_text = price_tag.get_text(strip=True)
+        print(f"DEBUG: Found price_tag with text: '{price_text}'")
         # Remove non-numeric characters except dot and convert to int
         cleaned_price = re.sub(r'[^\d.]', '', price_text)
+        print(f"DEBUG: Cleaned price: '{cleaned_price}'")
         try:
             data["price_usd"] = int(float(cleaned_price)) # Convert to float first to handle decimals, then to int
+            print(f"DEBUG: Successfully parsed price: {data['price_usd']}")
         except ValueError:
+            print(f"DEBUG: ValueError when parsing price: '{cleaned_price}'")
             data["price_usd"] = None
     else:
+        print("DEBUG: No price_tag with class='' found")
         # Alternative: New format price
         price_alt = soup.find('span', class_='common-text titleM c-green')
         if price_alt:
             price_text = price_alt.get_text(strip=True)
+            print(f"DEBUG: Found price_alt with text: '{price_text}'")
             cleaned_price = re.sub(r'[^\d.]', '', price_text)
+            print(f"DEBUG: Cleaned alt price: '{cleaned_price}'")
             try:
                 data["price_usd"] = int(float(cleaned_price))
+                print(f"DEBUG: Successfully parsed alt price: {data['price_usd']}")
             except ValueError:
+                print(f"DEBUG: ValueError when parsing alt price: '{cleaned_price}'")
                 data["price_usd"] = None
+        else:
+            print("DEBUG: No price_alt with class='common-text titleM c-green' found")
+    
+    # Additional price detection method if previous methods failed
+    if data["price_usd"] is None:
+        print("DEBUG: Price still None, trying additional methods...")
+        # Look for price in strong tag with green color styling
+        price_strong_green = soup.find('strong', class_='common-text ws-pre-wrap titleL')
+        if price_strong_green:
+            style = price_strong_green.get('style', '')
+            print(f"DEBUG: Found strong with titleL class, style: '{style}'")
+            if 'green' in style.lower() or 'var(--green)' in style:
+                price_text = price_strong_green.get_text(strip=True)
+                print(f"DEBUG: Found green strong with text: '{price_text}'")
+                # Remove non-numeric characters except dot and convert to int
+                cleaned_price = re.sub(r'[^\d.]', '', price_text)
+                print(f"DEBUG: Cleaned green price: '{cleaned_price}'")
+                try:
+                    data["price_usd"] = int(float(cleaned_price))
+                    print(f"DEBUG: Successfully parsed green price: {data['price_usd']}")
+                except ValueError:
+                    print(f"DEBUG: ValueError when parsing green price: '{cleaned_price}'")
+                    data["price_usd"] = None
+            else:
+                print("DEBUG: Strong tag found but no green color in style")
+        else:
+            print("DEBUG: No strong tag with 'common-text ws-pre-wrap titleL' class found")
+        
+        # If still not found, try any strong tag with green color in style
+        if data["price_usd"] is None:
+            print("DEBUG: Searching all strong tags for green color...")
+            strong_tags = soup.find_all('strong')
+            print(f"DEBUG: Found {len(strong_tags)} strong tags total")
+            for i, strong_tag in enumerate(strong_tags):
+                style = strong_tag.get('style', '')
+                text = strong_tag.get_text(strip=True)
+                print(f"DEBUG: Strong tag {i+1}: style='{style}', text='{text}'")
+                if 'green' in style.lower() or 'var(--green)' in style:
+                    price_text = strong_tag.get_text(strip=True)
+                    print(f"DEBUG: Found green strong tag with text: '{price_text}'")
+                    # Check if text contains currency symbols or price indicators
+                    if '$' in price_text or '₴' in price_text or '€' in price_text or re.search(r'\d+.*\d+', price_text):
+                        print(f"DEBUG: Text contains currency or price pattern")
+                        cleaned_price = re.sub(r'[^\d.]', '', price_text)
+                        print(f"DEBUG: Cleaned final price: '{cleaned_price}'")
+                        try:
+                            data["price_usd"] = int(float(cleaned_price))
+                            print(f"DEBUG: Successfully parsed final price: {data['price_usd']}")
+                            break
+                        except ValueError:
+                            print(f"DEBUG: ValueError when parsing final price: '{cleaned_price}'")
+                            continue
+                    else:
+                        print(f"DEBUG: Text doesn't contain currency or price pattern")
+            
+            if data["price_usd"] is None:
+                print("DEBUG: All price parsing methods failed")
+        else:
+            print(f"DEBUG: Price found via green strong method: {data['price_usd']}")
+    else:
+        print(f"DEBUG: Price found via primary methods: {data['price_usd']}")
 
     # 4. Odometer
     odometer_div = soup.find('div', class_='base-information bold')

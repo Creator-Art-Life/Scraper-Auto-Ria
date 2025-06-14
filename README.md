@@ -35,6 +35,8 @@ DATABASE_URL="postgresql://your_db_user:your_db_password@your_db_host/your_db_na
 AUTO_RIA_START_URL="https://auto.ria.com/uk/car/used/"
 SCRAPE_TIME="01:00"
 DUMP_TIME="03:00"
+# Если запускает через консоль пишите свое время
+# В DOCKER ВРЕМЯ UTC + 0, НУЖНО ПОМНИТЬ ОБ ЭТОМ
 ```
 
 ### 2. Запуск через Docker (Рекомендовано)
@@ -88,6 +90,8 @@ DATABASE_URL="postgresql://your_db_user:your_db_password@your_db_host/your_db_na
 AUTO_RIA_START_URL="https://auto.ria.com/uk/car/used/"
 SCRAPE_TIME="01:00"
 DUMP_TIME="03:00"
+# Если запускает через консоль пишите свое время
+# В DOCKER ВРЕМЯ UTC + 0, НУЖНО ПОМНИТЬ ОБ ЭТОМ
 ```
 
 ### 2. Запуск через Docker (Рекомендуется)

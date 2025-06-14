@@ -1,5 +1,0 @@
-requests 
-bs4
-dotenv
-psycopg2-binary==2.9.9
-

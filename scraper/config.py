@@ -12,6 +12,10 @@ class Config:
     PG_PASSWORD = os.getenv("PG_PASSWORD")
     PG_PORT = int(os.getenv("PG_PORT", 5432)) # Convert to int, default 5432
 
+    SCRAPE_TIME = os.getenv("SCRAPE_TIME") # e.g., "01:00"
+    DUMP_TIME = os.getenv("DUMP_TIME")     # e.g., "03:00"
+    AUTO_SCRAPE_TIME = os.getenv("AUTO_SCRAPE_TIME") # e.g., "30" for 30 seconds, "60" for 1 minute
+
     COMMON_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build=MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
     } 
