@@ -1,5 +1,6 @@
 import time
-import requests
+import aiohttp
+import asyncio
 import threading
 import copy
 import datetime
@@ -9,8 +10,8 @@ import os
 import argparse
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from scraper.core.scraper_core import collect_ad_urls_from_page, parse_ad_page, fetch_html_with_requests
-from scraper.database.db_operations import save_data_to_postgresql, get_existing_ad_urls, connect_db
+from scraper.core.scraper_core import collect_ad_urls_from_page, parse_ad_page, fetch_html_with_aiohttp, process_ad_batch
+from scraper.database.db_operations import save_data_to_postgresql, get_existing_ad_urls, connect_db, save_data_to_postgresql_async, get_existing_ad_urls_async
 from scraper.file_operations.file_writer import save_data_to_json
 from scraper.config import Config
 
@@ -63,7 +64,11 @@ def auto_save_worker():
                     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"\n💾 [{current_time}] Auto-saving {len(new_records)} new ads to PostgreSQL (total: {total_records})...")
                     try:
-                        save_data_to_postgresql(new_records.copy())  # Save only new records
+                        # Используем асинхронную функцию в отдельном event loop
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(save_data_to_postgresql_async(new_records.copy()))
+                        loop.close()
                         last_saved_index = total_records  # Update the index of last saved record
                         print(f"✅ [{current_time}] Auto-save completed successfully. Saved records {last_saved_index - len(new_records) + 1}-{last_saved_index}")
                     except Exception as e:
@@ -78,7 +83,22 @@ def auto_save_worker():
     finally:
         print("🔄 Auto-save worker stopped")
 
-def perform_scraping_job():
+async def save_batch_to_db(batch_results):
+    """Асинхронное сохранение пакета данных в базу"""
+    if batch_results:
+        try:
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"💾 [{current_time}] Saving {len(batch_results)} ads to database...")
+            await save_data_to_postgresql_async(batch_results)
+            print(f"✅ [{current_time}] Successfully saved {len(batch_results)} ads to database")
+            return True
+        except Exception as e:
+            print(f"❌ Error saving batch to database: {e}")
+            return False
+    return False
+
+async def perform_scraping_job_async():
+    """Асинхронная функция скрапинга"""
     global all_ads_data, last_saved_index
     with all_ads_data_lock, last_saved_index_lock:
         all_ads_data.clear() # Clear data from previous runs to avoid accumulating old data on new runs
@@ -88,7 +108,24 @@ def perform_scraping_job():
         print("AUTO_RIA_START_URL is not set in the .env file. Please set it to a valid URL, e.g., https://auto.ria.com/uk/car/used/")
         return
 
-    print(f"\n--- [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting daily scraping job ---")
+    print(f"\n--- [{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting daily scraping job (ASYNC) ---")
+    print(f"🔧 Configuration:")
+    print(f"   - Database Host: {Config.PG_HOST}")
+    print(f"   - Database Name: {Config.PG_DBNAME}")
+    print(f"   - Scrape Time: {Config.SCRAPE_TIME}")
+    print(f"   - Dump Time: {Config.DUMP_TIME}")
+    print(f"   - Auto-save Interval: {Config.AUTO_SCRAPE_TIME} seconds" if Config.AUTO_SCRAPE_TIME else "   - Auto-save: Disabled")
+    print(f"   - Start URL: {Config.AUTO_RIA_START_URL}")
+    print(f"   - Mode: ASYNCHRONOUS (High Performance)")
+    print(f"")
+    print(f"⚙️ Performance Parameters:")
+    print(f"   - Semaphore Limit: {Config.SEMAPHORE_LIMIT} concurrent requests")
+    print(f"   - Batch Size: {Config.BATCH_SIZE} ads per batch")
+    print(f"   - Batch Delay: {Config.BATCH_DELAY}s between batches")
+    print(f"   - Page Delay: {Config.PAGE_DELAY}s between pages")
+    print(f"   - Connection Limit: {Config.CONNECTION_LIMIT} total, {Config.CONNECTION_LIMIT_PER_HOST} per host")
+    print(f"   - Timeouts: {Config.CONNECTION_TIMEOUT}s total, {Config.CONNECT_TIMEOUT}s connect")
+    
     start_time = time.time()
 
     # Start auto-save worker if AUTO_SCRAPE_TIME is configured
@@ -98,54 +135,113 @@ def perform_scraping_job():
         auto_save_thread = threading.Thread(target=auto_save_worker, daemon=True)
         auto_save_thread.start()
 
-    print("Fetching existing ad URLs from the database...")
-    existing_ad_urls = get_existing_ad_urls()
+    print("Fetching existing ad URLs from the database (async)...")
+    existing_ad_urls = await get_existing_ad_urls_async()
     print(f"Found {len(existing_ad_urls)} URLs already in the database.")
 
-    # Initialize a requests Session for this job run
-    session = requests.Session()
-    session.headers.update(Config.COMMON_HEADERS)
-    session.headers.update({'Cookie': '''chk=1; __utmc=79960839; __utmz=79960839.1749807882.1.1.utmcsr=google|utmccn=(organic)|utmcmd=organic|utmctr=(not%20provided); showNewFeatures=7; extendedSearch=1; informerIndex=1; _gcl_au=1.1.696652926.1749807882; _504c2=http://10.42.12.49:3000; _ga=GA1.1.76946374.1749807883; _fbp=fb.1.1749807883050.284932067592788166; gdpr=[2,3]; ui=d166f29f660ec9a4; showNewNextAdvertisement=-10; PHPSESSID=eyJ3ZWJTZXNzaW9uQXZhaWxhYmxlIjp0cnVlLCJ3ZWJQZXJzb25JZCI6MCwid2ViQ2xpZW50SWQiOjM1MTMxODQ5MjcsIndlYkNsaWVudENvZGUiOjE3MTIyNDUxNTYsIndlYkNsaWVudENvb2tpZSI6ImQxNjZmMjlmNjYwZWM5YTQiLCJfZXhwaXJlIjoxNzQ5ODk0NDU3NTA4LCJfbWF4QWdlIjo4NjQwMDAwMH0=; _gcl_au=1.1.696652926.1749807882; __utma=79960839.52955078.1749807882.1749807882.1749888108.2; ria_sid=85621522490013; test_new_features=471; advanced_search_test=42; PHPSESSID=yUVRySHhF47tGqsLEO9GHZLcJq2osvFu; __gads=ID=357ddd82150197a9:T=1749808075:RT=1749890584:S=ALNI_MaYlNw99vGLw5YT57y-0ottKquT8Q; __gpi=UID=0000111e88d3917e:T=1749808075:RT=1749890584:S=AA-AfjapKWw5csLyi8WbFzcgx7_9; _ga=GA1.1.76946374.1749807883; _clck=124xdts%7C2%7Cfwr%7C0%7C1991; PSP_ID=d6374a6a63b8471567eadc00172e0f0346120a00cde02eb39884db30b0e0cf3313065153; __utmb=79960839.28.10.1749888108; jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1IjoiMTMwNjUxNTMiLCJpYXQiOjE3NDk4OTA2NzksImV4cCI6MTc0OTk3NzA3OX0.bfPkCvRMbzO0Wpx3W1GzqzDTWj3mFMX1lEX8xSYzRs8; FCNEC=%5B%5B%22AKsRol94amvT-sh5pLyQYesxeeqh1ANcAcZv1RruzC5qZWVCeTeRaIYxbKu_zBQ7aUm588xj0OtMrcuHk5D3YHJSRQvi47uuxqB0jkpAJJ9BoaRGHVxoB0ZDsmO0ivZYfN_Tg6ESvQl4AeyAVIW9MfScExiJNTOfGQ%3D%3D%22%5D%5D; _clsk=8eewh6%7C1749890696753%7C5%7C1%7Ci.clarity.ms%2Fcollect; _ga_R4TCZEVX9J=GS2.1.s1749890610$o1$g1$t1749890703$j33$l0$h0; _ga_KGL740D7XD=GS2.1.s1749888109$o2$g1$t1749890899$j60$l0$h2072563748'''})
+    # Создаем семафор для ограничения количества одновременных запросов
+    semaphore = asyncio.Semaphore(Config.SEMAPHORE_LIMIT)
+    
+    # Настройка aiohttp session с настраиваемыми параметрами
+    cookie_jar = aiohttp.CookieJar()
+    connector = aiohttp.TCPConnector(
+        limit=Config.CONNECTION_LIMIT, 
+        limit_per_host=Config.CONNECTION_LIMIT_PER_HOST
+    )
+    timeout = aiohttp.ClientTimeout(
+        total=Config.CONNECTION_TIMEOUT, 
+        connect=Config.CONNECT_TIMEOUT
+    )
+    
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        cookie_jar=cookie_jar,
+        headers=Config.COMMON_HEADERS
+    ) as session:
+        
+        # Устанавливаем cookies
+        session.cookie_jar.update_cookies({
+            'chk': '1',
+            '__utmc': '79960839',
+            '__utmz': '79960839.1749807882.1.1.utmcsr=google|utmccn=(organic)|utmcmd=organic|utmctr=(not%20provided)',
+            'showNewFeatures': '7',
+            'extendedSearch': '1',
+            'informerIndex': '1',
+            '_gcl_au': '1.1.696652926.1749807882',
+            '_504c2': 'http://10.42.12.49:3000',
+            '_ga': 'GA1.1.76946374.1749807883',
+            '_fbp': 'fb.1.1749807883050.284932067592788166',
+            'gdpr': '[2,3]',
+            'ui': 'd166f29f660ec9a4',
+            'showNewNextAdvertisement': '-10',
+            'PHPSESSID': 'yUVRySHhF47tGqsLEO9GHZLcJq2osvFu'
+        })
 
-    current_page_url = Config.AUTO_RIA_START_URL
-    while True:
-        print(f"\nCollecting ad URLs from main page: {current_page_url}")
-        ad_urls, next_page_url = collect_ad_urls_from_page(session, current_page_url)
+        current_page_url = Config.AUTO_RIA_START_URL
+        page_count = 0
+        total_saved = 0
+        
+        while True:
+            page_count += 1
+            print(f"\n🔍 Page {page_count}: Collecting ad URLs from: {current_page_url}")
+            
+            try:
+                ad_urls, next_page_url = await collect_ad_urls_from_page(session, current_page_url)
+            except Exception as e:
+                print(f"❌ Error collecting URLs from page {page_count}: {e}")
+                break
 
-        if ad_urls:
-            print(f"Found {len(ad_urls)} advertisements on this page. Processing...")
-            for i, ad_url in enumerate(ad_urls):
-                if ad_url in existing_ad_urls:
-                    print(f"  [{i+1}/{len(ad_urls)}] Skipping already processed ad: {ad_url}")
-                    continue
+            if ad_urls:
+                print(f"📋 Found {len(ad_urls)} advertisements on page {page_count}. Processing in parallel...")
+                
+                # Обрабатываем объявления пакетами с настраиваемым размером
+                batch_size = Config.BATCH_SIZE
+                for i in range(0, len(ad_urls), batch_size):
+                    batch_urls = ad_urls[i:i + batch_size]
+                    print(f"🔄 Processing batch {i//batch_size + 1}/{(len(ad_urls) + batch_size - 1)//batch_size} ({len(batch_urls)} ads)...")
+                    
+                    try:
+                        batch_results = await process_ad_batch(session, batch_urls, existing_ad_urls, semaphore)
+                        
+                        if batch_results:
+                            # Добавляем в глобальный список
+                            with all_ads_data_lock:
+                                all_ads_data.extend(batch_results)
+                            
+                            # Сразу сохраняем в базу данных
+                            saved_successfully = await save_batch_to_db(batch_results)
+                            if saved_successfully:
+                                total_saved += len(batch_results)
+                                with last_saved_index_lock:
+                                    last_saved_index = len(all_ads_data)
+                            
+                            print(f"✅ Successfully processed and saved {len(batch_results)} ads from batch (Total saved: {total_saved})")
+                        else:
+                            print("📭 No new ads found in this batch")
+                        
+                        # Настраиваемая пауза между пакетами
+                        if Config.BATCH_DELAY > 0:
+                            print(f"⏳ Waiting {Config.BATCH_DELAY}s before next batch...")
+                            await asyncio.sleep(Config.BATCH_DELAY)
+                        
+                    except Exception as e:
+                        print(f"❌ Error processing batch: {e}")
+                        continue
+                        
+            else:
+                print("📭 No advertisement links found on this page. Stopping scraping.")
+                break
 
-                print(f"  [{i+1}/{len(ad_urls)}] Processing ad: {ad_url}")
-                ad_page_html = fetch_html_with_requests(session, ad_url)
-                if ad_page_html:
-                    ad_data = parse_ad_page(ad_url, ad_page_html, session)
-                    if ad_data:
-                        print("    --- Advertisement Data ---")
-                        for key, value in ad_data.items():
-                            print(f"    {key.replace('_', ' ').title()}: {value}")
-                        print("    --------------------------")
-                        with all_ads_data_lock:
-                            all_ads_data.append(ad_data)
-                    else:
-                        print(f"    Failed to parse advertisement data for {ad_url}.")
-                else:
-                    print(f"    Failed to fetch ad page: {ad_url}")
-                time.sleep(0.5)
-        else:
-            print("No advertisement links found on this page. Stopping scraping.")
-            break
-
-        if next_page_url:
-            current_page_url = next_page_url
-            print(f"Navigating to next page: {current_page_url}")
-            time.sleep(2)
-        else:
-            print("No next page found. Stopping scraping.")
-            break
+            if next_page_url:
+                current_page_url = next_page_url
+                print(f"➡️ Navigating to next page: {current_page_url}")
+                if Config.PAGE_DELAY > 0:
+                    print(f"⏳ Waiting {Config.PAGE_DELAY}s before next page...")
+                    await asyncio.sleep(Config.PAGE_DELAY)
+            else:
+                print("🏁 No next page found. Stopping scraping.")
+                break
 
     # Stop auto-save worker
     if auto_save_thread:
@@ -154,7 +250,8 @@ def perform_scraping_job():
 
     end_time = time.time()
     total_elapsed_time = end_time - start_time
-    print(f"--- Finished scraping job. Total elapsed time: {total_elapsed_time:.2f} seconds ---")
+    print(f"--- ⏱️ Finished scraping job. Total elapsed time: {total_elapsed_time:.2f} seconds ---")
+    print(f"--- 📊 Processed {page_count} pages, collected {len(all_ads_data)} ads, saved {total_saved} ads ---")
 
     # Save any remaining unsaved data
     with all_ads_data_lock, last_saved_index_lock:
@@ -162,14 +259,23 @@ def perform_scraping_job():
         if total_records > last_saved_index:
             remaining_records = all_ads_data[last_saved_index:]
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n--- [{current_time}] Saving {len(remaining_records)} remaining ads to PostgreSQL ---")
-            save_data_to_postgresql(remaining_records)
+            print(f"\n--- 💾 [{current_time}] Saving {len(remaining_records)} remaining ads to PostgreSQL (async) ---")
+            await save_data_to_postgresql_async(remaining_records)
             last_saved_index = total_records
-            print(f"--- [{current_time}] Finished saving remaining ads ---")
+            print(f"--- ✅ [{current_time}] Finished saving remaining ads ---")
         elif total_records > 0:
-            print(f"\n--- All {total_records} ads have already been saved during auto-save ---")
+            print(f"\n--- 📭 All {total_records} ads have already been saved during processing ---")
         else:
-            print(f"\n--- No ads were collected during this scraping session ---")
+            print(f"\n--- 📭 No ads were collected during this scraping session ---")
+
+def perform_scraping_job():
+    """Синхронная обертка для асинхронной функции скрапинга"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(perform_scraping_job_async())
+    finally:
+        loop.close()
 
 def perform_dump_job():
     with all_ads_data_lock:
@@ -205,7 +311,11 @@ def signal_handler(signum, frame):
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"\n💾 [{current_time}] Saving {len(remaining_records)} unsaved ads to PostgreSQL before shutdown...")
             try:
-                save_data_to_postgresql(remaining_records)
+                # Используем асинхронную функцию в отдельном event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(save_data_to_postgresql_async(remaining_records))
+                loop.close()
                 print(f"✅ [{current_time}] Successfully saved {len(remaining_records)} unsaved records before shutdown")
             except Exception as e:
                 print(f"❌ [{current_time}] Error saving data to database: {e}")
@@ -220,7 +330,7 @@ def signal_handler(signum, frame):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='AutoRia Scraper')
+    parser = argparse.ArgumentParser(description='AutoRia Scraper (Async Version)')
     parser.add_argument('--run-now', action='store_true', 
                        help='Run scraping immediately without using scheduler')
     parser.add_argument('--dump-now', action='store_true',
@@ -231,7 +341,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    print("🚀 Starting AutoRia Scraper...")
+    print("🚀 Starting AutoRia Scraper (ASYNC VERSION)...")
     print(f"📅 Current time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Проверка подключения к базе данных при старте
@@ -246,6 +356,15 @@ if __name__ == "__main__":
     print(f"   - Dump Time: {Config.DUMP_TIME}")
     print(f"   - Auto-save Interval: {Config.AUTO_SCRAPE_TIME} seconds" if Config.AUTO_SCRAPE_TIME else "   - Auto-save: Disabled")
     print(f"   - Start URL: {Config.AUTO_RIA_START_URL}")
+    print(f"   - Mode: ASYNCHRONOUS (High Performance)")
+    print(f"")
+    print(f"⚙️ Performance Parameters:")
+    print(f"   - Semaphore Limit: {Config.SEMAPHORE_LIMIT} concurrent requests")
+    print(f"   - Batch Size: {Config.BATCH_SIZE} ads per batch")
+    print(f"   - Batch Delay: {Config.BATCH_DELAY}s between batches")
+    print(f"   - Page Delay: {Config.PAGE_DELAY}s between pages")
+    print(f"   - Connection Limit: {Config.CONNECTION_LIMIT} total, {Config.CONNECTION_LIMIT_PER_HOST} per host")
+    print(f"   - Timeouts: {Config.CONNECTION_TIMEOUT}s total, {Config.CONNECT_TIMEOUT}s connect")
     
     # Check if immediate execution is requested
     if args.run_now:
@@ -274,7 +393,10 @@ if __name__ == "__main__":
                     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"\n💾 [{current_time}] Saving {len(remaining_records)} unsaved ads to PostgreSQL before shutdown...")
                     try:
-                        save_data_to_postgresql(remaining_records)
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(save_data_to_postgresql_async(remaining_records))
+                        loop.close()
                         print(f"✅ [{current_time}] Successfully saved {len(remaining_records)} unsaved records before shutdown")
                     except Exception as e:
                         print(f"❌ [{current_time}] Error saving data to database: {e}")

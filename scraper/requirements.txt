@@ -3,3 +3,7 @@ beautifulsoup4==4.12.2
 psycopg2-binary==2.9.7
 python-dotenv==1.0.0
 APScheduler==3.10.4
+pytz
+aiohttp==3.9.1
+asyncpg==0.29.0
+aiofiles==23.2.0
