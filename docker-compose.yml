@@ -3,15 +3,30 @@ services:
     build: .
     container_name: autoria_scraper
     environment:
+      # Database Configuration
       - PG_HOST=${PG_HOST}
       - PG_DBNAME=${PG_DBNAME}
       - PG_USER=${PG_USER}
       - PG_PASSWORD=${PG_PASSWORD}
       - PG_PORT=${PG_PORT:-5432}
+      
+      # Scraping Configuration
       - AUTO_RIA_START_URL=${AUTO_RIA_START_URL:-https://auto.ria.com/uk/car/used/}
       - SCRAPE_TIME=${SCRAPE_TIME:-01:00}
       - DUMP_TIME=${DUMP_TIME:-03:00}
-      - AUTO_SCRAPE_TIME=${AUTO_SCRAPE_TIME}
+      - AUTO_SCRAPE_TIME=${AUTO_SCRAPE_TIME:-30}
+      
+      # Performance Parameters
+      - SEMAPHORE_LIMIT=${SEMAPHORE_LIMIT:-2}
+      - BATCH_SIZE=${BATCH_SIZE:-5}
+      - BATCH_DELAY=${BATCH_DELAY:-2.0}
+      - PAGE_DELAY=${PAGE_DELAY:-3.0}
+      
+      # HTTP Connection Parameters
+      - CONNECTION_LIMIT=${CONNECTION_LIMIT:-50}
+      - CONNECTION_LIMIT_PER_HOST=${CONNECTION_LIMIT_PER_HOST:-20}
+      - CONNECTION_TIMEOUT=${CONNECTION_TIMEOUT:-30}
+      - CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-10}
     volumes:
       - ./dumps:/app/dumps
     restart: unless-stopped

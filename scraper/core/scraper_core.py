@@ -83,7 +83,7 @@ async def collect_ad_urls_from_page(session, page_url):
     return ad_urls, next_page_url
 
 async def get_phone_from_ria(session, ad_url):
-    """Асинхронное получение номера телефона через API"""
+    """Асинхронное получение номера телефона через API (улучшенная версия)"""
     try:
         # Fetch the ad page HTML first to get hash and expires
         async with session.get(ad_url, headers=Config.COMMON_HEADERS) as response:
@@ -91,38 +91,83 @@ async def get_phone_from_ria(session, ad_url):
             content = await response.text()
             
         soup = BeautifulSoup(content, 'html.parser')
-        scripts = soup.find_all('script')
         
         hash_val = None
         expires_val = None
 
-        # First, try to find hash and expires in data attributes of script tags
-        script_with_data_attrs = soup.find('script', attrs={'data-hash': True, 'data-expires': True})
-        if script_with_data_attrs:
-            hash_val = script_with_data_attrs.get('data-hash')
-            expires_val = script_with_data_attrs.get('data-expires')
+        # Метод 1: Поиск в data-атрибутах элементов
+        elements_with_data = soup.find_all(attrs={'data-hash': True})
+        for elem in elements_with_data:
+            hash_val = elem.get('data-hash')
+            expires_val = elem.get('data-expires')
+            if hash_val and expires_val:
+                break
 
-        # If not found in data attributes, try to find in script content (existing logic)
+        # Метод 2: Поиск в JavaScript коде
         if not hash_val or not expires_val:
+            scripts = soup.find_all('script')
             for script in scripts:
                 if script.string:
-                    # Corrected regex for hash and expires
-                    hash_match = re.search(r'''hash["']?\s*:\s*["']([^'"]+)''', script.string)
-                    expires_match = re.search(r'''expires["']?\s*:\s*(\d+)''', script.string)
+                    script_content = script.string
                     
-                    if hash_match and expires_match:
-                        hash_val = hash_match.group(1)
-                        expires_val = expires_match.group(1)
-                        break # Found, no need to continue searching scripts
-        
-        # Alternative places to find hash if not found in scripts (e.g., data-attributes on button)
+                    # Различные паттерны для поиска hash и expires
+                    hash_patterns = [
+                        r'''hash["']?\s*:\s*["']([^'"]+)["']''',
+                        r'''["']hash["']?\s*:\s*["']([^'"]+)["']''',
+                        r'''hash\s*=\s*["']([^'"]+)["']''',
+                        r'''data-hash\s*=\s*["']([^'"]+)["']''',
+                    ]
+                    
+                    expires_patterns = [
+                        r'''expires["']?\s*:\s*(\d+)''',
+                        r'''["']expires["']?\s*:\s*(\d+)''',
+                        r'''expires\s*=\s*(\d+)''',
+                        r'''data-expires\s*=\s*["']?(\d+)["']?''',
+                    ]
+                    
+                    # Ищем hash
+                    if not hash_val:
+                        for pattern in hash_patterns:
+                            match = re.search(pattern, script_content)
+                            if match:
+                                hash_val = match.group(1)
+                                break
+                    
+                    # Ищем expires
+                    if not expires_val:
+                        for pattern in expires_patterns:
+                            match = re.search(pattern, script_content)
+                            if match:
+                                expires_val = match.group(1)
+                                break
+                    
+                    # Если нашли оба значения, прекращаем поиск
+                    if hash_val and expires_val:
+                        break
+
+        # Метод 3: Поиск в кнопках и ссылках с телефонами
+        if not hash_val or not expires_val:
+            phone_elements = soup.find_all(['button', 'a', 'span'], class_=re.compile(r'phone|contact', re.IGNORECASE))
+            for elem in phone_elements:
+                if not hash_val:
+                    hash_val = elem.get('data-hash')
+                if not expires_val:
+                    expires_val = elem.get('data-expires')
+                if hash_val and expires_val:
+                    break
+
+        # Метод 4: Поиск в любых элементах с data-hash или data-expires
         if not hash_val:
-            phone_button = soup.find('button', {'data-hash': True})
-            if phone_button:
-                hash_val = phone_button.get('data-hash')
-                # If hash is found here without expires, we might need to make an assumption or find expires elsewhere.
-                # For now, if expires is still None, the API call will likely fail, as it's a required parameter.
+            hash_elem = soup.find(attrs={'data-hash': True})
+            if hash_elem:
+                hash_val = hash_elem.get('data-hash')
         
+        if not expires_val:
+            expires_elem = soup.find(attrs={'data-expires': True})
+            if expires_elem:
+                expires_val = expires_elem.get('data-expires')
+
+        # Если нашли hash и expires, делаем запрос к API
         if hash_val and expires_val:
             ad_id_match = re.search(r'_(\d+)\.html', ad_url)
             if ad_id_match:
@@ -135,26 +180,43 @@ async def get_phone_from_ria(session, ad_url):
                         phone_json = await phone_response.json()
                         
                         extracted_phones = []
-                        if isinstance(phone_json, dict) and 'phones' in phone_json:
-                            for item in phone_json['phones']:
-                                if isinstance(item, str):
-                                    extracted_phones.append(item)
-                                elif isinstance(item, dict) and 'phoneFormatted' in item: # Corrected key
-                                    extracted_phones.append(item['phoneFormatted'])
+                        
+                        # Обрабатываем различные форматы ответа API
+                        if isinstance(phone_json, dict):
+                            if 'phones' in phone_json:
+                                for item in phone_json['phones']:
+                                    if isinstance(item, str):
+                                        extracted_phones.append(item)
+                                    elif isinstance(item, dict):
+                                        # Пробуем различные ключи для номера телефона
+                                        phone_keys = ['phoneFormatted', 'phone', 'number', 'phoneNumber']
+                                        for key in phone_keys:
+                                            if key in item and item[key]:
+                                                extracted_phones.append(str(item[key]))
+                                                break
+                            elif 'phone' in phone_json:
+                                extracted_phones.append(str(phone_json['phone']))
                         elif isinstance(phone_json, list):
                             for item in phone_json:
                                 if isinstance(item, str):
                                     extracted_phones.append(item)
+                                elif isinstance(item, dict):
+                                    phone_keys = ['phoneFormatted', 'phone', 'number', 'phoneNumber']
+                                    for key in phone_keys:
+                                        if key in item and item[key]:
+                                            extracted_phones.append(str(item[key]))
+                                            break
                         
                         return extracted_phones
+                        
                 except aiohttp.ClientError as e:
                     print(f"Error fetching phone API for {ad_url}: {e}")
-                except json.JSONDecodeError:
-                    print(f"Error decoding phone API JSON for {ad_url}")
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding phone API JSON for {ad_url}: {e}")
             else:
                 print(f"Could not extract ad_id from URL: {ad_url}")
         else:
-            print(f"Hash or expires not found for {ad_url}. Cannot fetch phone via API.")
+            print(f"Hash or expires not found for {ad_url}. Hash: {hash_val}, Expires: {expires_val}")
         
     except Exception as e:
         print(f"Error in get_phone_from_ria for {ad_url}: {e}")
@@ -321,190 +383,216 @@ async def parse_newauto_page(url, soup, session, data):
 
 
 async def parse_regular_ad_page(url, soup, session, data):
-    """Парсинг обычной страницы объявления (существующая логика)"""
+    """Парсинг обычной страницы объявления (обновленная логика)"""
     
     # 1. URL (already have it)
-    # 2. Title
+    # 2. Title - обновленные селекторы
     title_tag = soup.find('h1', class_='head')
+    if not title_tag:
+        # Новые варианты селекторов для заголовка
+        title_tag = soup.find('h1', class_='auto-head_title')
+        if not title_tag:
+            title_tag = soup.find('h1')
+            if not title_tag:
+                # Ищем в div с классами, содержащими title
+                title_tag = soup.find('div', class_=re.compile(r'title|head', re.IGNORECASE))
+                if not title_tag:
+                    # Последний вариант - ищем любой элемент с большим текстом в начале страницы
+                    potential_titles = soup.find_all(['h1', 'h2', 'div'], limit=10)
+                    for elem in potential_titles:
+                        text = elem.get_text(strip=True)
+                        if len(text) > 10 and any(word in text.lower() for word in ['kia', 'toyota', 'bmw', 'mercedes', 'audi', 'volkswagen', 'ford', 'hyundai', 'nissan', 'honda']):
+                            title_tag = elem
+                            break
+    
     if title_tag:
         data["title"] = title_tag.get_text(strip=True)
     else:
-        # Alternative: New format title
-        title_alt = soup.find('div', class_='common-text size-16-20 titleS fw-bold mb-4')
-        if title_alt:
-            data["title"] = title_alt.get_text(strip=True)
-
-    # 3. Price USD
-    price_tag = soup.find('strong', class_='')
-    if price_tag:
-        price_text = price_tag.get_text(strip=True)
-        print(f"DEBUG: Found price_tag with text: '{price_text}'")
-        # Remove non-numeric characters except dot and convert to int
-        cleaned_price = re.sub(r'[^\d.]', '', price_text)
-        print(f"DEBUG: Cleaned price: '{cleaned_price}'")
-        try:
-            data["price_usd"] = int(float(cleaned_price)) # Convert to float first to handle decimals, then to int
-            print(f"DEBUG: Successfully parsed price: {data['price_usd']}")
-        except ValueError:
-            print(f"DEBUG: ValueError when parsing price: '{cleaned_price}'")
-            data["price_usd"] = None
-    else:
-        print("DEBUG: No price_tag with class='' found")
-        # Alternative: New format price
-        price_alt = soup.find('span', class_='common-text titleM c-green')
-        if price_alt:
-            price_text = price_alt.get_text(strip=True)
-            print(f"DEBUG: Found price_alt with text: '{price_text}'")
-            cleaned_price = re.sub(r'[^\d.]', '', price_text)
-            print(f"DEBUG: Cleaned alt price: '{cleaned_price}'")
-            try:
-                data["price_usd"] = int(float(cleaned_price))
-                print(f"DEBUG: Successfully parsed alt price: {data['price_usd']}")
-            except ValueError:
-                print(f"DEBUG: ValueError when parsing alt price: '{cleaned_price}'")
-                data["price_usd"] = None
-        else:
-            print("DEBUG: No price_alt with class='common-text titleM c-green' found")
-    
-    # Additional price detection method if previous methods failed
-    if data["price_usd"] is None:
-        print("DEBUG: Price still None, trying additional methods...")
-        # Look for price in strong tag with green color styling
-        price_strong_green = soup.find('strong', class_='common-text ws-pre-wrap titleL')
-        if price_strong_green:
-            style = price_strong_green.get('style', '')
-            print(f"DEBUG: Found strong with titleL class, style: '{style}'")
-            if 'green' in style.lower() or 'var(--green)' in style:
-                price_text = price_strong_green.get_text(strip=True)
-                print(f"DEBUG: Found green strong with text: '{price_text}'")
-                # Remove non-numeric characters except dot and convert to int
-                cleaned_price = re.sub(r'[^\d.]', '', price_text)
-                print(f"DEBUG: Cleaned green price: '{cleaned_price}'")
-                try:
-                    data["price_usd"] = int(float(cleaned_price))
-                    print(f"DEBUG: Successfully parsed green price: {data['price_usd']}")
-                except ValueError:
-                    print(f"DEBUG: ValueError when parsing green price: '{cleaned_price}'")
-                    data["price_usd"] = None
-            else:
-                print("DEBUG: Strong tag found but no green color in style")
-        else:
-            print("DEBUG: No strong tag with 'common-text ws-pre-wrap titleL' class found")
+        # Агрессивный поиск заголовка по тексту страницы
+        page_text = soup.get_text()
+        # Ищем паттерны типа "Марка Модель год"
+        title_patterns = [
+            r'((?:Kia|Toyota|BMW|Mercedes|Audi|Volkswagen|Ford|Hyundai|Nissan|Honda|Mazda|Lexus|Renault|Peugeot|Citroën|Skoda|Seat|Volvo|Subaru|Mitsubishi|Suzuki|Infiniti|Acura|Cadillac|Chevrolet|Chrysler|Dodge|Jeep|Lincoln|Buick|GMC|Hummer|Pontiac|Saturn|Saab|Jaguar|Land Rover|Bentley|Rolls-Royce|Aston Martin|Maserati|Ferrari|Lamborghini|Porsche|McLaren|Bugatti|Koenigsegg|Pagani|Alfa Romeo|Fiat|Lancia|Mini|Smart|Dacia|Lada|UAZ|GAZ|ZAZ|Chery|Geely|BYD|Great Wall|Haval|Changan|JAC|Lifan|MG|Ssangyong|Daewoo|Hyundai|Kia)\s+[A-Za-z0-9\-\s]+(?:20\d{2}|19\d{2})?)',
+        ]
         
-        # If still not found, try any strong tag with green color in style
-        if data["price_usd"] is None:
-            print("DEBUG: Searching all strong tags for green color...")
-            strong_tags = soup.find_all('strong')
-            print(f"DEBUG: Found {len(strong_tags)} strong tags total")
-            for i, strong_tag in enumerate(strong_tags):
-                style = strong_tag.get('style', '')
-                text = strong_tag.get_text(strip=True)
-                print(f"DEBUG: Strong tag {i+1}: style='{style}', text='{text}'")
-                if 'green' in style.lower() or 'var(--green)' in style:
-                    price_text = strong_tag.get_text(strip=True)
-                    print(f"DEBUG: Found green strong tag with text: '{price_text}'")
-                    # Check if text contains currency symbols or price indicators
-                    if '$' in price_text or '₴' in price_text or '€' in price_text or re.search(r'\d+.*\d+', price_text):
-                        print(f"DEBUG: Text contains currency or price pattern")
-                        cleaned_price = re.sub(r'[^\d.]', '', price_text)
-                        print(f"DEBUG: Cleaned final price: '{cleaned_price}'")
-                        try:
-                            data["price_usd"] = int(float(cleaned_price))
-                            print(f"DEBUG: Successfully parsed final price: {data['price_usd']}")
-                            break
-                        except ValueError:
-                            print(f"DEBUG: ValueError when parsing final price: '{cleaned_price}'")
-                            continue
-                    else:
-                        print(f"DEBUG: Text doesn't contain currency or price pattern")
-            
-            if data["price_usd"] is None:
-                print("DEBUG: All price parsing methods failed")
-        else:
-            print(f"DEBUG: Price found via green strong method: {data['price_usd']}")
-    else:
-        print(f"DEBUG: Price found via primary methods: {data['price_usd']}")
+        for pattern in title_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                potential_title = match.group(1).strip()
+                if len(potential_title) > 5:
+                    data["title"] = potential_title
+                    break
 
-    # 4. Odometer
-    odometer_div = soup.find('div', class_='base-information bold')
-    if odometer_div:
-        odometer_text = odometer_div.get_text(strip=True)
-        odometer_match = re.search(r'(\d+)\s*тис\.\s*км', odometer_text)
-        if odometer_match:
+    # 3. Price USD - улучшенный парсинг цены
+    data["price_usd"] = None
+    
+    # Метод 1: Ищем цену в долларах по тексту
+    price_patterns = [
+        r'(\d+(?:\s*\d+)*)\s*\$',  # "19650 $"
+        r'\$\s*(\d+(?:\s*\d+)*)',  # "$ 19650"
+        r'(\d+(?:,\d+)*)\s*USD',   # "19,650 USD"
+    ]
+    
+    page_text = soup.get_text()
+    for pattern in price_patterns:
+        matches = re.findall(pattern, page_text.replace(' ', ''))
+        for match in matches:
             try:
-                # Convert "95 тыс. км" to 95000
-                data["odometer"] = int(odometer_match.group(1)) * 1000
+                price_num = int(match.replace(',', '').replace(' ', ''))
+                if 1000 <= price_num <= 1000000:  # Разумный диапазон цен для авто
+                    data["price_usd"] = price_num
+                    break
             except ValueError:
-                data["odometer"] = None
-        else:
-            # Try to extract pure number if "тыс. км" is not present (e.g., for new cars)
-            pure_num_match = re.search(r'(\d+)', odometer_text)
-            if pure_num_match:
-                try:
-                    data["odometer"] = int(pure_num_match.group(1))
-                except ValueError:
-                    data["odometer"] = None
-            else:
-                data["odometer"] = None
-    else:
-        # Alternative: New format odometer - look for mileage icon and text
-        odometer_elements = soup.find_all('div', class_='structure-row ai-center gap-8 flex-1')
-        for element in odometer_elements:
-            text = element.get_text(strip=True)
-            if 'км' in text:
-                odometer_match = re.search(r'(\d+)\s*тис\.\s*км', text)
-                if odometer_match:
+                continue
+        if data["price_usd"]:
+            break
+    
+    # Метод 2: Ищем в элементах с зеленым цветом (обычно цена)
+    if not data["price_usd"]:
+        green_elements = soup.find_all(['span', 'strong', 'div'], style=re.compile(r'color.*green|var\(--green\)', re.IGNORECASE))
+        green_elements.extend(soup.find_all(['span', 'strong', 'div'], class_=re.compile(r'green|price', re.IGNORECASE)))
+        
+        for elem in green_elements:
+            text = elem.get_text(strip=True)
+            if '$' in text or 'USD' in text:
+                price_match = re.search(r'(\d+(?:,\d+)*)', text.replace(' ', ''))
+                if price_match:
                     try:
-                        data["odometer"] = int(odometer_match.group(1)) * 1000
+                        price_num = int(price_match.group(1).replace(',', ''))
+                        if 1000 <= price_num <= 1000000:
+                            data["price_usd"] = price_num
+                            break
                     except ValueError:
-                        data["odometer"] = None
-                else:
-                    pure_num_match = re.search(r'(\d+)', text)
-                    if pure_num_match:
+                        continue
+
+    # 4. Odometer - улучшенный парсинг пробега
+    data["odometer"] = None
+    
+    # Ищем пробег по различным паттернам
+    odometer_patterns = [
+        r'(\d+)\s*тис\.\s*км',     # "95 тис. км"
+        r'(\d+)\s*тыс\.\s*км',     # "95 тыс. км"
+        r'(\d+)\s*000\s*км',       # "95 000 км"
+        r'(\d+)\s*км',             # "95000 км"
+    ]
+    
+    page_text = soup.get_text()
+    for pattern in odometer_patterns:
+        matches = re.findall(pattern, page_text)
+        for match in matches:
+            try:
+                odometer_num = int(match)
+                if pattern.endswith(r'тис\.\s*км') or pattern.endswith(r'тыс\.\s*км'):
+                    odometer_num *= 1000  # Конвертируем тысячи в полное число
+                if 0 <= odometer_num <= 1000000:  # Разумный диапазон пробега
+                    data["odometer"] = odometer_num
+                    break
+            except ValueError:
+                continue
+        if data["odometer"] is not None:
+            break
+    
+    # Альтернативный поиск в структурированных элементах
+    if data["odometer"] is None:
+        odometer_elements = soup.find_all(['div', 'span'], class_=re.compile(r'mileage|odometer|base-information', re.IGNORECASE))
+        for elem in odometer_elements:
+            text = elem.get_text(strip=True)
+            if 'км' in text:
+                for pattern in odometer_patterns:
+                    match = re.search(pattern, text)
+                    if match:
                         try:
-                            data["odometer"] = int(pure_num_match.group(1))
+                            odometer_num = int(match.group(1))
+                            if pattern.endswith(r'тис\.\s*км') or pattern.endswith(r'тыс\.\s*км'):
+                                odometer_num *= 1000
+                            if 0 <= odometer_num <= 1000000:
+                                data["odometer"] = odometer_num
+                                break
                         except ValueError:
-                            data["odometer"] = None
+                            continue
+                if data["odometer"] is not None:
+                    break
+    
+    # Дополнительный поиск пробега в любом тексте на странице
+    if data["odometer"] is None:
+        page_text = soup.get_text()
+        # Ищем пробег в формате "123 тыс. км" или "123000 км"
+        odometer_text_patterns = [
+            r'(\d+)\s*тис\.\s*км',
+            r'(\d+)\s*тыс\.\s*км', 
+            r'(\d+)\s*000\s*км',
+            r'Пробіг[:\s]*(\d+)\s*тис\.\s*км',
+            r'Пробіг[:\s]*(\d+)\s*тыс\.\s*км',
+            r'Пробіг[:\s]*(\d+)\s*км',
+        ]
+        
+        for pattern in odometer_text_patterns:
+            matches = re.findall(pattern, page_text)
+            for match in matches:
+                try:
+                    odometer_num = int(match)
+                    if 'тис' in pattern or 'тыс' in pattern:
+                        odometer_num *= 1000
+                    if 1000 <= odometer_num <= 500000:  # Разумный диапазон
+                        data["odometer"] = odometer_num
+                        break
+                except ValueError:
+                    continue
+            if data["odometer"] is not None:
                 break
 
-    # 5. Username
-    seller_tag = soup.find('a', class_='sellerPro')
-    if seller_tag:
-        # First try to get text content
-        username_text = seller_tag.get_text(strip=True)
-        if username_text:
-            data["username"] = username_text
+    # 5. Username - улучшенный парсинг имени продавца
+    data["username"] = None
+    
+    # Метод 1: Классические селекторы
+    username_selectors = [
+        ('a', 'sellerPro'),
+        ('div', 'seller_info_name'),
+        ('div', 'seller-info-name'),
+        ('span', 'seller-name'),
+        ('div', re.compile(r'seller.*name|contact.*person', re.IGNORECASE)),
+    ]
+    
+    for tag, class_pattern in username_selectors:
+        if isinstance(class_pattern, str):
+            elem = soup.find(tag, class_=class_pattern)
         else:
-            # If no text, check for img tag with alt or title attribute
-            img_in_seller = seller_tag.find('img')
-            if img_in_seller:
-                username_from_alt = img_in_seller.get('alt') or img_in_seller.get('title')
-                if username_from_alt:
-                    data["username"] = username_from_alt.strip()
-                else:
-                    data["username"] = None
-            else:
-                data["username"] = None
-    else:
-        # NEW SECOND FALLBACK: Look for username in 'seller_info_area' structure
-        seller_info_area_div = soup.find('div', class_='seller_info_area')
-        if seller_info_area_div:
-            seller_info_name_div = seller_info_area_div.find('div', class_='seller_info_name bold')
-            if seller_info_name_div:
-                data["username"] = seller_info_name_div.get_text(strip=True)
-            else:
-                data["username"] = None
-        else:
-            # ORIGINAL SECOND FALLBACK (now third): Look for other common elements that might contain seller name
-            potential_username_tag = soup.find(['div', 'span', 'p'], class_=re.compile(r'(seller|user|author)[-_]name|contact-person', re.IGNORECASE))
-            if potential_username_tag:
-                username_text = potential_username_tag.get_text(strip=True)
-                if username_text:
-                    data["username"] = username_text
-                else:
-                    data["username"] = None
-            else:
-                data["username"] = None
+            elem = soup.find(tag, class_=class_pattern)
+        
+        if elem:
+            username_text = elem.get_text(strip=True)
+            if username_text and len(username_text) > 1:
+                data["username"] = username_text
+                break
+    
+    # Метод 2: Поиск по ссылкам на профили продавцов
+    if not data["username"]:
+        profile_links = soup.find_all('a', href=re.compile(r'/users/|/seller/|/profile/', re.IGNORECASE))
+        for link in profile_links:
+            text = link.get_text(strip=True)
+            if text and len(text) > 1 and len(text) < 50:  # Разумная длина имени
+                data["username"] = text
+                break
+    
+    # Метод 3: Поиск в тексте страницы по паттернам
+    if not data["username"]:
+        page_text = soup.get_text()
+        # Ищем паттерны типа "Продавець: Имя" или "Контакт: Имя"
+        username_patterns = [
+            r'Продавець[:\s]+([А-Яа-яA-Za-z\s]{2,30})',
+            r'Контакт[:\s]+([А-Яа-яA-Za-z\s]{2,30})',
+            r'Власник[:\s]+([А-Яа-яA-Za-z\s]{2,30})',
+            r'Менеджер[:\s]+([А-Яа-яA-Za-z\s]{2,30})',
+        ]
+        
+        for pattern in username_patterns:
+            match = re.search(pattern, page_text)
+            if match:
+                potential_username = match.group(1).strip()
+                # Проверяем, что это не служебный текст
+                if not any(word in potential_username.lower() for word in ['показать', 'телефон', 'номер', 'контакт', 'інформація']):
+                    data["username"] = potential_username
+                    break
 
     # 6. Phone Number (Now using async API call and taking the first one as BIGINT)
     phones_list = await get_phone_from_ria(session, url)
